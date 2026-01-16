@@ -3,10 +3,18 @@ import requests
 import pandas as pd
 import pydeck as pdk
 from datetime import datetime
+import time
 
 # --- ページ設定 ---
-st.set_page_config(page_title="日本全国 気象 3D Map (Light)", layout="wide")
-st.title("☀️ 日本気象 3Dビジュアライザー (ライトモード)")
+st.set_page_config(page_title="日本全国 気象 3D Pro", layout="wide")
+
+# --- 自動モード判定 (18時〜6時はダークモード) ---
+current_hour = datetime.now().hour
+is_night = current_hour >= 18 or current_hour < 6
+default_map_style = "dark" if is_night else "light"
+theme_icon = "🌙" if is_night else "☀️"
+
+st.title(f"{theme_icon} 日本気象 3Dビジュアライザー (自動モード切替)")
 
 CITIES = {
     '全国': {
@@ -23,12 +31,10 @@ CITIES = {
     }
 }
 
-# --- データ取得関数 ---
 @st.cache_data(ttl=600)
 def fetch_weather_data(region):
     weather_info = []
     BASE_URL = 'https://api.open-meteo.com/v1/forecast'
-    
     for city, coords in CITIES[region].items():
         params = {
             'latitude': coords[0], 'longitude': coords[1],
@@ -40,10 +46,9 @@ def fetch_weather_data(region):
             curr = res['current']
             temp = curr['temperature_2m']
             
-            # 明るい背景で映えるように色の彩度を調整
+            # 色の計算
             norm_temp = max(0, min(1, (temp - 0) / 35))
             r = int(255 * norm_temp)
-            g = int(50 + 100 * (1 - abs(norm_temp - 0.5) * 2)) # 少し鮮やかに
             b = int(255 * (1 - norm_temp))
             
             weather_info.append({
@@ -52,39 +57,44 @@ def fetch_weather_data(region):
                 'Precipitation': curr['precipitation'],
                 'WindSpeed': curr['wind_speed_10m'],
                 'WindDir': curr['wind_direction_10m'],
-                'color': [r, g, b, 220], # 透明度を少し下げてくっきりさせる
-                'elevation': temp * 5000,
-                'rain_radius': 5000 + (curr['precipitation'] * 5000)
+                'color': [r, 100, b, 200],
+                'elevation': (temp + 15) * 2500, # 札幌等の氷点下対応
+                'is_snow': temp < 0 and curr['precipitation'] > 0
             })
         except: continue
     return pd.DataFrame(weather_info)
 
-# --- メイン処理 ---
 region = st.sidebar.selectbox("表示エリア", ["全国", "九州"])
 df = fetch_weather_data(region)
 
 if not df.empty:
-    # 1. 気温の柱
+    # 1. 気温の柱 (アニメーション付)
     column_layer = pdk.Layer(
         "ColumnLayer", data=df, get_position='[lon, lat]',
-        get_elevation='elevation', radius=15000, get_fill_color='color', pickable=True
+        get_elevation='elevation', radius=18000, get_fill_color='color',
+        pickable=True, auto_highlight=True,
+        transitions={"get_elevation": 1000, "get_fill_color": 1000}
     )
 
-    # 2. 雨の波紋（少し濃いめの青に変更）
-    rain_layer = pdk.Layer(
+    # 2. 雨/雪の表現 (Scatterplot)
+    # 雪の場合は白、雨の場合は水色
+    df['weather_color'] = df.apply(lambda x: [255, 255, 255, 200] if x['is_snow'] else [0, 150, 255, 150], axis=1)
+    weather_layer = pdk.Layer(
         "ScatterplotLayer", data=df[df['Precipitation'] > 0],
-        get_position='[lon, lat]', get_fill_color=[0, 100, 255, 120],
-        get_radius='rain_radius'
+        get_position='[lon, lat]', get_fill_color='weather_color',
+        get_radius='5000 + Precipitation * 5000',
+        transitions={"get_radius": 1000}
     )
 
-    # 3. 風向きの矢印（暗い色にして視認性を向上）
-    df['icon'] = '↑' 
+    # 3. 風向き
+    df['icon'] = '↑'
     wind_layer = pdk.Layer(
         "TextLayer", data=df, get_position='[lon, lat]',
         get_text='icon', get_size='WindSpeed', size_scale=2,
         get_angle='180 - WindDir',
-        get_color=[50, 50, 50, 255], # グレー/黒系の矢印
-        get_pixel_offset=[0, -30]
+        get_color=[200, 200, 200, 255] if is_night else [50, 50, 50, 255],
+        get_pixel_offset=[0, -30],
+        transitions={"get_angle": 1000}
     )
 
     view_state = pdk.ViewState(
@@ -92,17 +102,17 @@ if not df.empty:
         zoom=4.5 if region == "全国" else 6.5, pitch=45
     )
 
-    # マップスタイルを 'light' に変更
     st.pydeck_chart(pdk.Deck(
-        map_style="light", 
-        layers=[column_layer, rain_layer, wind_layer],
+        map_style=default_map_style,
+        layers=[column_layer, weather_layer, wind_layer],
         initial_view_state=view_state,
         tooltip={"html": "<b>{City}</b><br>気温: {Temperature}°C<br>降水: {Precipitation}mm"}
     ))
 
-    st.write("### 観測データ一覧")
-    st.dataframe(df[['City', 'Temperature', 'Precipitation', 'WindSpeed']], hide_index=True)
+st.sidebar.info(f"現在のモード: {'夜間モード' if is_night else '昼間モード'}\n(18時に自動切替)")
 
-if st.button('🔄 データを更新'):
+if st.button('🔄 データを最新に更新'):
     st.cache_data.clear()
-    st.rerun()
+    with st.spinner('更新中...'):
+        time.sleep(0.5)
+        st.rerun()
