@@ -5,11 +5,9 @@ import pydeck as pdk
 from datetime import datetime
 
 # --- ページ設定 ---
-st.set_page_config(page_title="日本全国 リアルタイム気温 3D Map", layout="wide")
+st.set_page_config(page_title="日本全国 気温・降水量 3D Map", layout="wide")
+st.title("🌡️× 💧 気温と降水量の複合ビジュアライザー")
 
-st.title("🌡️ 日本主要都市の現在気温 3Dビジュアライザー")
-
-# --- 都市データ定義 ---
 CITIES = {
     '全国': {
         'Sapporo': [43.0642, 141.3468], 'Sendai': [38.2682, 140.8694],
@@ -25,36 +23,24 @@ CITIES = {
     }
 }
 
-# --- サイドバー設定 ---
-st.sidebar.header("表示設定")
-target_region = st.sidebar.selectbox("表示エリアを選択", ["全国", "九州"])
-# 地図スタイルを標準的なものに変更
-map_style_choice = st.sidebar.selectbox("地図スタイル", ["Dark", "Light", "Road"])
-style_dict = {
-    "Dark": "dark",
-    "Light": "light",
-    "Road": "road"
-}
-
 # --- データ取得関数 ---
 @st.cache_data(ttl=600)
 def fetch_weather_data(region):
     weather_info = []
     BASE_URL = 'https://api.open-meteo.com/v1/forecast'
-    selected_cities = CITIES[region]
     
-    for city, coords in selected_cities.items():
+    for city, coords in CITIES[region].items():
         params = {
-            'latitude': coords[0],
-            'longitude': coords[1],
-            'current': 'temperature_2m',
+            'latitude': coords[0], 'longitude': coords[1],
+            'current': ['temperature_2m', 'precipitation'], # 降水量を追加
             'timezone': 'Asia/Tokyo'
         }
         try:
             res = requests.get(BASE_URL, params=params).json()
             temp = res['current']['temperature_2m']
+            rain = res['current']['precipitation'] # mm単位
             
-            # 色の計算 (0-35度で青〜赤にグラデーション)
+            # 色の計算 (気温)
             norm_temp = max(0, min(1, (temp - 0) / 35))
             r = int(255 * norm_temp)
             g = int(100 * (1 - abs(norm_temp - 0.5) * 2))
@@ -62,52 +48,66 @@ def fetch_weather_data(region):
             
             weather_info.append({
                 'City': city, 'lat': coords[0], 'lon': coords[1],
-                'Temperature': temp, 'Time': res['current']['time'],
-                'color': [r, g, b, 200], 'elevation': temp * 5000 
+                'Temperature': temp, 
+                'Precipitation': rain,
+                'Time': res['current']['time'],
+                'color': [r, g, b, 200],
+                'elevation': temp * 5000,
+                # 雨量に応じた半径（最低5000、雨が降るほど大きく）
+                'rain_radius': 5000 + (rain * 5000) 
             })
-        except:
-            continue
+        except: continue
     return pd.DataFrame(weather_info)
 
 # --- メイン処理 ---
-df = fetch_weather_data(target_region)
+df = fetch_weather_data(st.sidebar.selectbox("表示エリア", ["全国", "九州"]))
 
 if not df.empty:
-    last_updated = datetime.fromisoformat(df['Time'].iloc[0]).strftime('%Y/%m/%d %H:%M')
-    st.caption(f"最終更新: {last_updated}")
+    st.sidebar.markdown(f"**最終更新:** \n{df['Time'].iloc[0]}")
+    
+    # --- レイヤー作成 ---
+    # 1. 気温の3D柱
+    column_layer = pdk.Layer(
+        "ColumnLayer",
+        data=df,
+        get_position='[lon, lat]',
+        get_elevation='elevation',
+        radius=15000,
+        get_fill_color='color',
+        pickable=True,
+    )
 
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        st.write("### 🌡️ 気温順")
-        st.dataframe(df[['City', 'Temperature']].sort_values('Temperature', ascending=False), hide_index=True)
-        if st.button('🔄 データを更新'):
-            st.cache_data.clear()
-            st.rerun()
+    # 2. 雨量の波紋（雨が降っている地点のみ表示）
+    rain_df = df[df['Precipitation'] > 0]
+    scatterplot_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=rain_df,
+        get_position='[lon, lat]',
+        get_fill_color=[0, 191, 255, 150], # 水色
+        get_radius='rain_radius',
+        pickable=False,
+    )
 
-    with col2:
-        view_state = pdk.ViewState(
-            latitude=df['lat'].mean(),
-            longitude=df['lon'].mean(),
-            zoom=4.5 if target_region == "全国" else 6.5,
-            pitch=50,
-            bearing=0
-        )
+    # --- 描画 ---
+    view_state = pdk.ViewState(
+        latitude=df['lat'].mean(), longitude=df['lon'].mean(),
+        zoom=4.5 if len(df) > 10 else 6.5, pitch=50
+    )
 
-        layer = pdk.Layer(
-            "ColumnLayer",
-            data=df,
-            get_position='[lon, lat]',
-            get_elevation='elevation',
-            radius=15000 if target_region == "全国" else 10000,
-            get_fill_color='color',
-            pickable=True,
-            auto_highlight=True,
-        )
+    st.pydeck_chart(pdk.Deck(
+        map_style="dark",
+        layers=[column_layer, scatterplot_layer],
+        initial_view_state=view_state,
+        tooltip={
+            "html": "<b>{City}</b><br>気温: {Temperature}°C<br>降水量: {Precipitation}mm",
+            "style": {"color": "white"}
+        }
+    ))
+    
+    # データテーブルの表示
+    st.write("### 現在の観測値詳細")
+    st.table(df[['City', 'Temperature', 'Precipitation']])
 
-        # map_style を単純な文字列指定に変更
-        st.pydeck_chart(pdk.Deck(
-            map_style=style_dict[map_style_choice], 
-            layers=[layer],
-            initial_view_state=view_state,
-            tooltip={"html": "<b>{City}</b><br>気温: {Temperature}°C", "style": {"color": "white"}}
-        ))
+if st.button('🔄 データを更新'):
+    st.cache_data.clear()
+    st.rerun()
