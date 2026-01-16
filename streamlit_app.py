@@ -127,6 +127,6 @@ if not df.empty:
     st.write("### 観測データ一覧")
     st.dataframe(df[['City', 'Temperature', 'Precipitation', 'WindSpeed']], hide_index=True)
 
-if st.button('🔄 データを更新'):
+if st.button('データを更新'):
     st.cache_data.clear()
     st.rerun()
