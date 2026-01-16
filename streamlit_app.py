@@ -5,8 +5,8 @@ import pydeck as pdk
 from datetime import datetime
 
 # --- ページ設定 ---
-st.set_page_config(page_title="日本全国 気象 3D Map (Custom)", layout="wide")
-st.title("☀️ 日本気象 3Dビジュアライザー")
+st.set_page_config(page_title="日本全国 気温 3D Map", layout="wide")
+st.title("🌡️ 日本気温 3Dビジュアライザー")
 
 CITIES = {
     '全国': {
@@ -33,7 +33,7 @@ def fetch_weather_data(region):
     for city, coords in CITIES[region].items():
         params = {
             'latitude': coords[0], 'longitude': coords[1],
-            'current': ['temperature_2m', 'precipitation', 'wind_speed_10m', 'wind_direction_10m'],
+            'current': ['temperature_2m', 'precipitation', 'wind_speed_10m'],
             'timezone': 'Asia/Tokyo'
         }
         try:
@@ -41,11 +41,10 @@ def fetch_weather_data(region):
             curr = res['current']
             temp = curr['temperature_2m']
             
-            # 計測時刻の取得（最初の都市のデータを代表とする）
             if fetch_time is None:
                 fetch_time = datetime.fromisoformat(curr['time']).strftime('%Y/%m/%d %H:%M')
 
-            # --- 気温による色分けロジック ---
+            # --- 気温による色分け ---
             if temp >= 30:
                 color = [128, 0, 128, 200]  # 紫
             elif temp >= 20:
@@ -62,10 +61,8 @@ def fetch_weather_data(region):
                 'Temperature': temp, 
                 'Precipitation': curr['precipitation'],
                 'WindSpeed': curr['wind_speed_10m'],
-                'WindDir': curr['wind_direction_10m'],
                 'color': color,
-                'elevation': max(0, temp * 5000), # 氷点下は高さ0にする
-                'rain_radius': 5000 + (curr['precipitation'] * 5000)
+                'elevation': max(0, temp * 5000) # 0度以下は高さ0
             })
         except: continue
     return pd.DataFrame(weather_info), fetch_time
@@ -75,55 +72,56 @@ region = st.sidebar.selectbox("表示エリア", ["全国", "九州"])
 df, last_updated = fetch_weather_data(region)
 
 if not df.empty:
-    st.caption(f"最終更新時刻 (現地時間): {last_updated}")
+    st.caption(f"計測時刻: {last_updated}")
 
-    # データを気温で分ける
+    # データを気温（0度超 / 0度以下）で分割
     warm_df = df[df['Temperature'] > 0]
     cold_df = df[df['Temperature'] <= 0]
 
     layers = []
 
-    # 1. 0度より高い場合：気温の柱
+    # 1. 気温が0度より高い場合：3Dの柱
     if not warm_df.empty:
         layers.append(pdk.Layer(
-            "ColumnLayer", data=warm_df, get_position='[lon, lat]',
-            get_elevation='elevation', radius=15000, get_fill_color='color', pickable=True
+            "ColumnLayer", 
+            data=warm_df, 
+            get_position='[lon, lat]',
+            get_elevation='elevation', 
+            radius=15000, 
+            get_fill_color='color', 
+            pickable=True
         ))
 
-    # 2. 0度以下の場合：青い円
+    # 2. 気温が0度以下の場合：平らな青い円
     if not cold_df.empty:
         layers.append(pdk.Layer(
-            "ScatterplotLayer", data=cold_df, get_position='[lon, lat]',
-            get_fill_color='color', get_radius=15000, pickable=True
+            "ScatterplotLayer", 
+            data=cold_df, 
+            get_position='[lon, lat]',
+            get_fill_color='color', 
+            get_radius=15000, 
+            pickable=True
         ))
-
-    # 3. 雨の波紋
-    layers.append(pdk.Layer(
-        "ScatterplotLayer", data=df[df['Precipitation'] > 0],
-        get_position='[lon, lat]', get_fill_color=[0, 100, 255, 80],
-        get_radius='rain_radius'
-    ))
-
-    # 4. 風向き
-    df['icon'] = '↑' 
-    layers.append(pdk.Layer(
-        "TextLayer", data=df, get_position='[lon, lat]',
-        get_text='icon', get_size='WindSpeed', size_scale=2,
-        get_angle='180 - WindDir',
-        get_color=[50, 50, 50, 255],
-        get_pixel_offset=[0, -30]
-    ))
 
     view_state = pdk.ViewState(
         latitude=df['lat'].mean(), longitude=df['lon'].mean(),
         zoom=4.5 if region == "全国" else 6.5, pitch=45
     )
 
+    # ツールチップに風速(WindSpeed)を追加
     st.pydeck_chart(pdk.Deck(
         map_style="light", 
         layers=layers,
         initial_view_state=view_state,
-        tooltip={"html": "<b>{City}</b><br>気温: {Temperature}°C<br>降水: {Precipitation}mm"}
+        tooltip={
+            "html": """
+                <b>{City}</b><br>
+                気温: {Temperature}°C<br>
+                降水: {Precipitation}mm<br>
+                風速: {WindSpeed}km/h
+            """,
+            "style": {"color": "white"}
+        }
     ))
 
     st.write("### 観測データ一覧")
