@@ -5,8 +5,8 @@ import pydeck as pdk
 from datetime import datetime
 
 # --- ページ設定 ---
-st.set_page_config(page_title="日本全国 気温・降水量 3D Map", layout="wide")
-st.title("🌡️× 💧 気温と降水量の複合ビジュアライザー")
+st.set_page_config(page_title="日本全国 気象 3D Map (Light)", layout="wide")
+st.title("☀️ 日本気象 3Dビジュアライザー (ライトモード)")
 
 CITIES = {
     '全国': {
@@ -32,81 +32,76 @@ def fetch_weather_data(region):
     for city, coords in CITIES[region].items():
         params = {
             'latitude': coords[0], 'longitude': coords[1],
-            'current': ['temperature_2m', 'precipitation'], # 降水量を追加
+            'current': ['temperature_2m', 'precipitation', 'wind_speed_10m', 'wind_direction_10m'],
             'timezone': 'Asia/Tokyo'
         }
         try:
             res = requests.get(BASE_URL, params=params).json()
-            temp = res['current']['temperature_2m']
-            rain = res['current']['precipitation'] # mm単位
+            curr = res['current']
+            temp = curr['temperature_2m']
             
-            # 色の計算 (気温)
+            # 明るい背景で映えるように色の彩度を調整
             norm_temp = max(0, min(1, (temp - 0) / 35))
             r = int(255 * norm_temp)
-            g = int(100 * (1 - abs(norm_temp - 0.5) * 2))
+            g = int(50 + 100 * (1 - abs(norm_temp - 0.5) * 2)) # 少し鮮やかに
             b = int(255 * (1 - norm_temp))
             
             weather_info.append({
                 'City': city, 'lat': coords[0], 'lon': coords[1],
                 'Temperature': temp, 
-                'Precipitation': rain,
-                'Time': res['current']['time'],
-                'color': [r, g, b, 200],
+                'Precipitation': curr['precipitation'],
+                'WindSpeed': curr['wind_speed_10m'],
+                'WindDir': curr['wind_direction_10m'],
+                'color': [r, g, b, 220], # 透明度を少し下げてくっきりさせる
                 'elevation': temp * 5000,
-                # 雨量に応じた半径（最低5000、雨が降るほど大きく）
-                'rain_radius': 5000 + (rain * 5000) 
+                'rain_radius': 5000 + (curr['precipitation'] * 5000)
             })
         except: continue
     return pd.DataFrame(weather_info)
 
 # --- メイン処理 ---
-df = fetch_weather_data(st.sidebar.selectbox("表示エリア", ["全国", "九州"]))
+region = st.sidebar.selectbox("表示エリア", ["全国", "九州"])
+df = fetch_weather_data(region)
 
 if not df.empty:
-    st.sidebar.markdown(f"**最終更新:** \n{df['Time'].iloc[0]}")
-    
-    # --- レイヤー作成 ---
-    # 1. 気温の3D柱
+    # 1. 気温の柱
     column_layer = pdk.Layer(
-        "ColumnLayer",
-        data=df,
-        get_position='[lon, lat]',
-        get_elevation='elevation',
-        radius=15000,
-        get_fill_color='color',
-        pickable=True,
+        "ColumnLayer", data=df, get_position='[lon, lat]',
+        get_elevation='elevation', radius=15000, get_fill_color='color', pickable=True
     )
 
-    # 2. 雨量の波紋（雨が降っている地点のみ表示）
-    rain_df = df[df['Precipitation'] > 0]
-    scatterplot_layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=rain_df,
-        get_position='[lon, lat]',
-        get_fill_color=[0, 191, 255, 150], # 水色
-        get_radius='rain_radius',
-        pickable=False,
+    # 2. 雨の波紋（少し濃いめの青に変更）
+    rain_layer = pdk.Layer(
+        "ScatterplotLayer", data=df[df['Precipitation'] > 0],
+        get_position='[lon, lat]', get_fill_color=[0, 100, 255, 120],
+        get_radius='rain_radius'
     )
 
-    # --- 描画 ---
+    # 3. 風向きの矢印（暗い色にして視認性を向上）
+    df['icon'] = '↑' 
+    wind_layer = pdk.Layer(
+        "TextLayer", data=df, get_position='[lon, lat]',
+        get_text='icon', get_size='WindSpeed', size_scale=2,
+        get_angle='180 - WindDir',
+        get_color=[50, 50, 50, 255], # グレー/黒系の矢印
+        get_pixel_offset=[0, -30]
+    )
+
     view_state = pdk.ViewState(
         latitude=df['lat'].mean(), longitude=df['lon'].mean(),
-        zoom=4.5 if len(df) > 10 else 6.5, pitch=50
+        zoom=4.5 if region == "全国" else 6.5, pitch=45
     )
 
+    # マップスタイルを 'light' に変更
     st.pydeck_chart(pdk.Deck(
-        map_style="dark",
-        layers=[column_layer, scatterplot_layer],
+        map_style="light", 
+        layers=[column_layer, rain_layer, wind_layer],
         initial_view_state=view_state,
-        tooltip={
-            "html": "<b>{City}</b><br>気温: {Temperature}°C<br>降水量: {Precipitation}mm",
-            "style": {"color": "white"}
-        }
+        tooltip={"html": "<b>{City}</b><br>気温: {Temperature}°C<br>降水: {Precipitation}mm"}
     ))
-    
-    # データテーブルの表示
-    st.write("### 現在の観測値詳細")
-    st.table(df[['City', 'Temperature', 'Precipitation']])
+
+    st.write("### 観測データ一覧")
+    st.dataframe(df[['City', 'Temperature', 'Precipitation', 'WindSpeed']], hide_index=True)
 
 if st.button('🔄 データを更新'):
     st.cache_data.clear()
