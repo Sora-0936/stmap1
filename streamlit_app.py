@@ -6,7 +6,7 @@ from datetime import datetime
 
 # --- ページ設定 ---
 st.set_page_config(page_title="日本全国 気温 3D Map", layout="wide")
-st.title("🌡️ 日本気温 3Dビジュアライザー")
+st.title("日本の現在の気温 3Dカラムマップ")
 
 CITIES = {
     '全国': {
