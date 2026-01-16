@@ -124,7 +124,7 @@ if not df.empty:
         }
     ))
 
-    st.write("### 観測データ一覧")
+    st.write("### 取得したデータ")
     st.dataframe(df[['City', 'Temperature', 'Precipitation', 'WindSpeed']], hide_index=True)
 
 if st.button('データを更新'):
