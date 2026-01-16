@@ -2,10 +2,11 @@ import streamlit as st
 import requests
 import pandas as pd
 import pydeck as pdk
+from datetime import datetime
 
 # --- ページ設定 ---
-st.set_page_config(page_title="日本全国 気象 3D Map (Animated)", layout="wide")
-st.title("☀️ 日本気象 3Dビジュアライザー (アニメーション版)")
+st.set_page_config(page_title="日本全国 気象 3D Map (Light)", layout="wide")
+st.title("☀️ 日本気象 3Dビジュアライザー (ライトモード)")
 
 CITIES = {
     '全国': {
@@ -22,6 +23,7 @@ CITIES = {
     }
 }
 
+# --- データ取得関数 ---
 @st.cache_data(ttl=600)
 def fetch_weather_data(region):
     weather_info = []
@@ -35,56 +37,54 @@ def fetch_weather_data(region):
         }
         try:
             res = requests.get(BASE_URL, params=params).json()
-            temp = res['current']['temperature_2m']
+            curr = res['current']
+            temp = curr['temperature_2m']
             
-            # 色の計算
+            # 明るい背景で映えるように色の彩度を調整
             norm_temp = max(0, min(1, (temp - 0) / 35))
+            r = int(255 * norm_temp)
+            g = int(50 + 100 * (1 - abs(norm_temp - 0.5) * 2)) # 少し鮮やかに
+            b = int(255 * (1 - norm_temp))
             
             weather_info.append({
                 'City': city, 'lat': coords[0], 'lon': coords[1],
                 'Temperature': temp, 
-                'Precipitation': res['current']['precipitation'],
-                'WindSpeed': res['current']['wind_speed_10m'],
-                'WindDir': res['current']['wind_direction_10m'],
-                'color': [int(255 * norm_temp), 100, int(255 * (1 - norm_temp)), 220],
-                # 札幌対策：氷点下でも柱が見えるよう、最低高さを設定 (例: temp+5度分を高さにする)
-                'elevation': (temp + 10) * 3000, 
-                'rain_radius': 5000 + (res['current']['precipitation'] * 5000)
+                'Precipitation': curr['precipitation'],
+                'WindSpeed': curr['wind_speed_10m'],
+                'WindDir': curr['wind_direction_10m'],
+                'color': [r, g, b, 220], # 透明度を少し下げてくっきりさせる
+                'elevation': temp * 5000,
+                'rain_radius': 5000 + (curr['precipitation'] * 5000)
             })
         except: continue
     return pd.DataFrame(weather_info)
 
+# --- メイン処理 ---
 region = st.sidebar.selectbox("表示エリア", ["全国", "九州"])
 df = fetch_weather_data(region)
 
 if not df.empty:
-    # --- 3D カラムレイヤー (アニメーション付き) ---
+    # 1. 気温の柱
     column_layer = pdk.Layer(
-        "ColumnLayer",
-        data=df,
-        get_position='[lon, lat]',
-        get_elevation='elevation',
-        radius=18000,
-        get_fill_color='color',
-        pickable=True,
-        auto_highlight=True,
-        # ここでアニメーションを設定 (高さが変わる時に1秒かける)
-        transitions={
-            "get_elevation": {"duration": 1000, "type": "interpolation"},
-            "get_fill_color": {"duration": 1000, "type": "interpolation"}
-        }
+        "ColumnLayer", data=df, get_position='[lon, lat]',
+        get_elevation='elevation', radius=15000, get_fill_color='color', pickable=True
     )
 
-    # 風向きテキストレイヤー
-    df['icon'] = '↑'
+    # 2. 雨の波紋（少し濃いめの青に変更）
+    rain_layer = pdk.Layer(
+        "ScatterplotLayer", data=df[df['Precipitation'] > 0],
+        get_position='[lon, lat]', get_fill_color=[0, 100, 255, 120],
+        get_radius='rain_radius'
+    )
+
+    # 3. 風向きの矢印（暗い色にして視認性を向上）
+    df['icon'] = '↑' 
     wind_layer = pdk.Layer(
         "TextLayer", data=df, get_position='[lon, lat]',
         get_text='icon', get_size='WindSpeed', size_scale=2,
         get_angle='180 - WindDir',
-        get_color=[80, 80, 80, 255],
-        get_pixel_offset=[0, -30],
-        # 風向きもアニメーション
-        transitions={"get_angle": 1000}
+        get_color=[50, 50, 50, 255], # グレー/黒系の矢印
+        get_pixel_offset=[0, -30]
     )
 
     view_state = pdk.ViewState(
@@ -92,12 +92,16 @@ if not df.empty:
         zoom=4.5 if region == "全国" else 6.5, pitch=45
     )
 
+    # マップスタイルを 'light' に変更
     st.pydeck_chart(pdk.Deck(
-        map_style="light",
-        layers=[column_layer, wind_layer],
+        map_style="light", 
+        layers=[column_layer, rain_layer, wind_layer],
         initial_view_state=view_state,
-        tooltip={"html": "<b>{City}</b><br>気温: {Temperature}°C"}
+        tooltip={"html": "<b>{City}</b><br>気温: {Temperature}°C<br>降水: {Precipitation}mm"}
     ))
+
+    st.write("### 観測データ一覧")
+    st.dataframe(df[['City', 'Temperature', 'Precipitation', 'WindSpeed']], hide_index=True)
 
 if st.button('🔄 データを更新'):
     st.cache_data.clear()
