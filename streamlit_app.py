@@ -5,8 +5,8 @@ import pydeck as pdk
 from datetime import datetime
 
 # --- ページ設定 ---
-st.set_page_config(page_title="日本全国 気象 3D Map (Light)", layout="wide")
-st.title("☀️ 日本気象 3Dビジュアライザー (ライトモード)")
+st.set_page_config(page_title="日本全国 気象 3D Map (Custom)", layout="wide")
+st.title("☀️ 日本気象 3Dビジュアライザー")
 
 CITIES = {
     '全国': {
@@ -27,6 +27,7 @@ CITIES = {
 @st.cache_data(ttl=600)
 def fetch_weather_data(region):
     weather_info = []
+    fetch_time = None
     BASE_URL = 'https://api.open-meteo.com/v1/forecast'
     
     for city, coords in CITIES[region].items():
@@ -40,62 +41,87 @@ def fetch_weather_data(region):
             curr = res['current']
             temp = curr['temperature_2m']
             
-            # 明るい背景で映えるように色の彩度を調整
-            norm_temp = max(0, min(1, (temp - 0) / 35))
-            r = int(255 * norm_temp)
-            g = int(50 + 100 * (1 - abs(norm_temp - 0.5) * 2)) # 少し鮮やかに
-            b = int(255 * (1 - norm_temp))
-            
+            # 計測時刻の取得（最初の都市のデータを代表とする）
+            if fetch_time is None:
+                fetch_time = datetime.fromisoformat(curr['time']).strftime('%Y/%m/%d %H:%M')
+
+            # --- 気温による色分けロジック ---
+            if temp >= 30:
+                color = [128, 0, 128, 200]  # 紫
+            elif temp >= 20:
+                color = [255, 165, 0, 200]  # オレンジ
+            elif temp >= 10:
+                color = [154, 205, 50, 200] # 黄緑
+            elif temp > 0:
+                color = [0, 191, 255, 200]  # 水色
+            else:
+                color = [0, 0, 255, 200]    # 青 (0度以下)
+
             weather_info.append({
                 'City': city, 'lat': coords[0], 'lon': coords[1],
                 'Temperature': temp, 
                 'Precipitation': curr['precipitation'],
                 'WindSpeed': curr['wind_speed_10m'],
                 'WindDir': curr['wind_direction_10m'],
-                'color': [r, g, b, 220], # 透明度を少し下げてくっきりさせる
-                'elevation': temp * 5000,
+                'color': color,
+                'elevation': max(0, temp * 5000), # 氷点下は高さ0にする
                 'rain_radius': 5000 + (curr['precipitation'] * 5000)
             })
         except: continue
-    return pd.DataFrame(weather_info)
+    return pd.DataFrame(weather_info), fetch_time
 
 # --- メイン処理 ---
 region = st.sidebar.selectbox("表示エリア", ["全国", "九州"])
-df = fetch_weather_data(region)
+df, last_updated = fetch_weather_data(region)
 
 if not df.empty:
-    # 1. 気温の柱
-    column_layer = pdk.Layer(
-        "ColumnLayer", data=df, get_position='[lon, lat]',
-        get_elevation='elevation', radius=15000, get_fill_color='color', pickable=True
-    )
+    st.caption(f"最終更新時刻 (現地時間): {last_updated}")
 
-    # 2. 雨の波紋（少し濃いめの青に変更）
-    rain_layer = pdk.Layer(
+    # データを気温で分ける
+    warm_df = df[df['Temperature'] > 0]
+    cold_df = df[df['Temperature'] <= 0]
+
+    layers = []
+
+    # 1. 0度より高い場合：気温の柱
+    if not warm_df.empty:
+        layers.append(pdk.Layer(
+            "ColumnLayer", data=warm_df, get_position='[lon, lat]',
+            get_elevation='elevation', radius=15000, get_fill_color='color', pickable=True
+        ))
+
+    # 2. 0度以下の場合：青い円
+    if not cold_df.empty:
+        layers.append(pdk.Layer(
+            "ScatterplotLayer", data=cold_df, get_position='[lon, lat]',
+            get_fill_color='color', get_radius=15000, pickable=True
+        ))
+
+    # 3. 雨の波紋
+    layers.append(pdk.Layer(
         "ScatterplotLayer", data=df[df['Precipitation'] > 0],
-        get_position='[lon, lat]', get_fill_color=[0, 100, 255, 120],
+        get_position='[lon, lat]', get_fill_color=[0, 100, 255, 80],
         get_radius='rain_radius'
-    )
+    ))
 
-    # 3. 風向きの矢印（暗い色にして視認性を向上）
+    # 4. 風向き
     df['icon'] = '↑' 
-    wind_layer = pdk.Layer(
+    layers.append(pdk.Layer(
         "TextLayer", data=df, get_position='[lon, lat]',
         get_text='icon', get_size='WindSpeed', size_scale=2,
         get_angle='180 - WindDir',
-        get_color=[50, 50, 50, 255], # グレー/黒系の矢印
+        get_color=[50, 50, 50, 255],
         get_pixel_offset=[0, -30]
-    )
+    ))
 
     view_state = pdk.ViewState(
         latitude=df['lat'].mean(), longitude=df['lon'].mean(),
         zoom=4.5 if region == "全国" else 6.5, pitch=45
     )
 
-    # マップスタイルを 'light' に変更
     st.pydeck_chart(pdk.Deck(
         map_style="light", 
-        layers=[column_layer, rain_layer, wind_layer],
+        layers=layers,
         initial_view_state=view_state,
         tooltip={"html": "<b>{City}</b><br>気温: {Temperature}°C<br>降水: {Precipitation}mm"}
     ))
