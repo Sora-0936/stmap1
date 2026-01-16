@@ -103,6 +103,7 @@ if not df.empty:
             pickable=True
         ))
 
+    st.subheader("3D カラムマップ")
     view_state = pdk.ViewState(
         latitude=df['lat'].mean(), longitude=df['lon'].mean(),
         zoom=4.5 if region == "全国" else 6.5, pitch=45
